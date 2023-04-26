@@ -1,3 +1,4 @@
+from typing import List
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
@@ -57,7 +58,8 @@ class BasicBlock(nn.Module):
         self.conv1 = Conv2d_Hori_Veri_Cross(
             inplanes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(planes)
-        self.relu = nn.ReLU(inplace=True)
+        # self.relu = nn.ReLU(inplace=True)
+        self.act =nn.Hardswish()
         # self.conv2 = conv3x3(planes, planes)
         self.conv2 = Conv2d_Hori_Veri_Cross(
             planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
@@ -70,7 +72,7 @@ class BasicBlock(nn.Module):
 
         out = self.conv1(x)
         out = self.bn1(out)
-        out = self.relu(out)
+        out = self.act(out)
 
         out = self.conv2(out)
         out = self.bn2(out)
@@ -79,84 +81,52 @@ class BasicBlock(nn.Module):
             residual = self.downsample(x)
 
         out += residual
-        out = self.relu(out)
-
-        return out
-
-
-class Bottleneck(nn.Module):
-    expansion = 4
-
-    def __init__(self, inplanes, planes, stride=1, downsample=None):
-        super(Bottleneck, self).__init__()
-        # self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
-        self.conv1 = Conv2d_Hori_Veri_Cross(
-            inplanes, planes, kernel_size=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
-        # self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
-        #                        padding=1, bias=False)
-        self.conv2 = Conv2d_Hori_Veri_Cross(planes, planes, kernel_size=3, stride=stride,
-                                            padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
-        # self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
-        self.conv3 = Conv2d_Hori_Veri_Cross(
-            planes, planes * 4, kernel_size=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(planes * 4)
-        # self.relu = nn.ReLU(inplace=True)
-        self.act = nn.SiLU()
-        self.downsample = downsample
-        self.stride = stride
-
-    def forward(self, x):
-        residual = x
-
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.act(out)
-
-        out = self.conv2(out)
-        out = self.bn2(out)
-        out = self.act(out)
-
-        out = self.conv3(out)
-        out = self.bn3(out)
-
-        if self.downsample is not None:
-            residual = self.downsample(x)
-
-        out += residual
         out = self.act(out)
 
         return out
-
 
 # AENet_C,S,G is based on ResNet-18
 class AENet(nn.Module):
 
-    def __init__(self, block=BasicBlock, layers=[2, 2, 2, 2], reduced=True, theta=0.0):
-        self.inplanes = 64
+    def __init__(
+            self, 
+            block = BasicBlock, 
+            widths: List =[64,128,256,512], 
+            layers: List =[2, 2, 2, 2], 
+            reduced: bool=False, 
+            theta=0.0,
+            use_depth=True,
+            use_ref=True,
+            ):
+        self.inplanes = widths[0]
+        self.use_depth = use_depth
+        self.use_ref = use_ref
         super(AENet, self).__init__()
         # self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
         #                        bias=False)
         self.conv1 = Conv2d_Hori_Veri_Cross(3, 64, kernel_size=7, stride=2, padding=1,
                                             bias=False)
         self.bn1 = nn.BatchNorm2d(64)
-        self.act = nn.ReLU(inplace=True)
+        # self.act = nn.ReLU(inplace=True)
+        self.act =nn.Hardswish()
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.layer1 = self._make_layer(block, 64, layers[0])
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
+        self.layer1 = self._make_layer(block, widths[0], layers[0])
+        self.layer2 = self._make_layer(block, widths[1], layers[1], stride=2)
+        self.layer3 = self._make_layer(block, widths[2], layers[2], stride=2)
         if not reduced:
-            self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
+            self.layer4 = self._make_layer(block, widths[3], layers[3], stride=2)
+            last_width = widths[3]
+        else:
+            last_width = widths[2]
         # self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
         self.avgpool = nn.AvgPool2d(7, stride=1)
 
         # Three classifiers of semantic informantion
-        self.fc_live_attribute = nn.Linear(512 * block.expansion, 40)
-        self.fc_attack = nn.Linear(512 * block.expansion, 11)
-        self.fc_light = nn.Linear(512 * block.expansion, 5)
+        self.fc_live_attribute = nn.Linear(last_width * block.expansion, 40)
+        self.fc_attack = nn.Linear(last_width * block.expansion, 11)
+        self.fc_light = nn.Linear(last_width * block.expansion, 5)
         # One classifier of Live/Spoof information
-        self.fc_live = nn.Linear(512 * block.expansion, 2)
+        self.fc_live = nn.Linear(last_width * block.expansion, 2)
 
         # Two embedding modules of geometric information
         self.upsample14 = nn.Upsample((14, 14), mode='bilinear')
@@ -165,9 +135,9 @@ class AENet(nn.Module):
         # self.reflect_final = nn.Conv2d(
         #     512, 3, kernel_size=3, stride=1, padding=1, bias=False)
         self.depth_final = Conv2d_Hori_Veri_Cross(
-            512, 1, kernel_size=3, stride=1, padding=1, bias=False)
+            last_width, 1, kernel_size=3, stride=1, padding=1, bias=False)
         self.reflect_final = Conv2d_Hori_Veri_Cross(
-            512, 3, kernel_size=3, stride=1, padding=1, bias=False)
+            last_width, 3, kernel_size=3, stride=1, padding=1, bias=False)
         # The ground truth of depth map and reflection map has been normalized[torchvision.transforms.ToTensor()]
         self.sigmoid = nn.Sigmoid()
 
@@ -210,16 +180,20 @@ class AENet(nn.Module):
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
-        x = self.layer4(x)
+        if hasattr(self, 'layer4'):
+            x = self.layer4(x)
 
-        depth_map = self.depth_final(x)
-        reflect_map = self.reflect_final(x)
+        depth_map = None
+        if self.use_depth:
+            depth_map = self.depth_final(x)
+            depth_map = self.sigmoid(depth_map)
+            depth_map = self.upsample14(depth_map)
 
-        depth_map = self.sigmoid(depth_map)
-        depth_map = self.upsample14(depth_map)
-
-        reflect_map = self.sigmoid(reflect_map)
-        reflect_map = self.upsample14(reflect_map)
+        if self.use_ref:
+            reflect_map = None
+            reflect_map = self.reflect_final(x)
+            reflect_map = self.sigmoid(reflect_map)
+            reflect_map = self.upsample14(reflect_map)
 
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
@@ -236,7 +210,7 @@ class AENet(nn.Module):
 if __name__ == "__main__":
     # Randomly generate a 3-channel image with a size of 224*224
     input = torch.rand(1, 3, 224, 224)
-    model = AENet()
+    model = AENet(reduced=True)
     model.eval()
     output = model(input)
     print(output)
