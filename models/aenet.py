@@ -181,10 +181,11 @@ class AENet(nn.Module):
         x_light = self.fc_light(x)
         x_live = self.fc_live(x)
 
-        return x_live
+        return x_live, depth_map
 
 
 if __name__ == "__main__":
+    import torchsummary as summary
     model = AENet()
-    model.eval()
-    print('wewew')
+    summary.summary(model, (3, 224, 224))
+    print(model(torch.randn(1, 3, 224, 224))[-1].shape)

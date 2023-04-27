@@ -11,8 +11,6 @@ import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 import math
 
-from utils import _pair
-
 __all__ = ['mobilenetv3_large', 'mobilenetv3_small']
 
 
@@ -38,11 +36,8 @@ def _make_divisible(v, divisor, min_value=None):
 
 class Conv2d_Hori_Veri_Cross(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1,
-                 padding=1, dilation=1, groups=1, bias=False, theta=0.7,
-                 device=None,
-                 dtype=None):
+                 padding=1, dilation=1, groups=1, bias=False, theta=0.7):
         super(Conv2d_Hori_Veri_Cross, self).__init__()
-        factory_kwargs = {'device': device, 'dtype': dtype}
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size,
                               stride=stride, padding=padding, dilation=dilation, groups=groups, bias=bias)
         self.theta = theta
@@ -50,9 +45,6 @@ class Conv2d_Hori_Veri_Cross(nn.Module):
         self.out_channels = out_channels
         self.stride = stride
         self.padding = padding
-        # to tuple
-        self.kernel_size = _pair(kernel_size)
-        self.register_parameter('bias', None)
 
     def forward(self, x):
         out_normal = self.conv(x)
@@ -177,7 +169,7 @@ class InvertedResidual(nn.Module):
 
 
 class MobileNetV3(nn.Module):
-    def __init__(self, cfgs, mode, num_classes=1000, width_mult=1.):
+    def __init__(self, cfgs, mode, width_mult=1., use_depth=True):
         super(MobileNetV3, self).__init__()
         # setting of inverted residual blocks
         self.cfgs = cfgs
@@ -201,30 +193,65 @@ class MobileNetV3(nn.Module):
         output_channel = {'large': 1280, 'small': 1024}
         output_channel = _make_divisible(
             output_channel[mode] * width_mult, 8) if width_mult > 1.0 else output_channel[mode]
-        self.classifier = nn.Sequential(
+        # self.classifier = nn.Sequential(
+        #     nn.Linear(exp_size, output_channel),
+        #     h_swish(),
+        #     nn.Dropout(0.2),
+        #     nn.Linear(output_channel, num_classes),
+        # )
+        if use_depth:
+            self.depth_final = nn.Sequential(
+                # conv
+                Conv2d_Hori_Veri_Cross(exp_size, 1, 3, 1, 1, bias=False),
+                # sigmoid
+                nn.Sigmoid(),
+                # upsample
+                nn.Upsample((14, 14), mode='bilinear')
+            )
+        self.pre_classifier = nn.Sequential(
             nn.Linear(exp_size, output_channel),
             h_swish(),
             nn.Dropout(0.2),
-            nn.Linear(output_channel, num_classes),
         )
+        # Three classifier of semantic information
+        self.fc_attr = nn.Linear(output_channel, 40)
+        self.fc_attack = nn.Linear(output_channel, 11)
+        self.fc_light = nn.Linear(output_channel, 5)
+        # One classifier of live/spoof information
+        self.fc_live = nn.Linear(output_channel, 2)
 
         self._initialize_weights()
 
     def forward(self, x):
         x = self.features(x)
         x = self.conv(x)
+
+        depth_map = None
+        if hasattr(self, 'depth_final'):
+            depth_map = self.depth_final(x)
+
         x = self.avgpool(x)
+
         x = x.view(x.size(0), -1)
-        x = self.classifier(x)
-        return x
+
+        x = self.pre_classifier(x)
+        attr = self.fc_attr(x)
+        attack = self.fc_attack(x)
+        light = self.fc_light(x)
+        live = self.fc_live(x)
+        if depth_map is not None:
+            return attr, attack, light, live, depth_map
+        else:
+            return attr, attack, light, live
 
     def _initialize_weights(self):
         for m in self.modules():
             if isinstance(m, Conv2d_Hori_Veri_Cross):
-                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                n = m.conv.kernel_size[0] * \
+                    m.conv.kernel_size[1] * m.out_channels
                 m.conv.weight.data.normal_(0, math.sqrt(2. / n))
-                if m.bias is not None:
-                    m.bias.data.zero_()
+                if m.conv.bias is not None:
+                    m.conv.bias.data.zero_()
             elif isinstance(m, nn.BatchNorm2d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
@@ -284,3 +311,5 @@ if __name__ == '__main__':
     import torchsummary as summary
     model = mobilenetv3_large()
     summary.summary(model, (3, 224, 224))
+    torch.save(model.state_dict(), 'mobilenetv3_large.pth')
+    print(model(torch.randn(1, 3, 224, 224))[-1].shape)
