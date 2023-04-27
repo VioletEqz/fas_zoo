@@ -311,5 +311,5 @@ if __name__ == '__main__':
     import torchsummary as summary
     model = mobilenetv3_large()
     summary.summary(model, (3, 224, 224))
-    torch.save(model.state_dict(), 'mobilenetv3_large.pth')
+    # torch.save(model.state_dict(), 'mobilenetv3_large.pth')
     print(model(torch.randn(1, 3, 224, 224))[-1].shape)
